@@ -1,0 +1,5 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+# Host routes provide the manager; the client half adds its sidebar entry.
+- insert:
+    - id: dreaming
+      name: '@local/dsh-dreaming'

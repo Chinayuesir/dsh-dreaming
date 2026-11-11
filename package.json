@@ -1,0 +1,65 @@
+{
+  "name": "@local/dsh-dreaming",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test dreaming.test.mjs client.test.mjs workflow/*.test.mjs"
+  },
+  "description": "Turn completed DSH conversations into a local, versioned memory wiki with a sidebar manager, memory map and run logs. 梦境：整理已完成的会话，管理可追溯的本地记忆。",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "dreaming",
+    "memory",
+    "distillation"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.1 <0.3.0",
+    "zod": "*"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "dreaming.test.mjs",
+    "client/client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/en.json",
+    "locale/zh.json",
+    "README.md",
+    "ARCHITECTURE.md",
+    "使用说明.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "workflow",
+    "ui",
+    "client.test.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chinayuesir/dsh-dreaming.git"
+  },
+  "homepage": "https://github.com/Chinayuesir/dsh-dreaming#readme",
+  "bugs": {
+    "url": "https://github.com/Chinayuesir/dsh-dreaming/issues"
+  }
+}

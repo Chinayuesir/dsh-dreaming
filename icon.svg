@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Dreaming Memory">
+  <rect width="256" height="256" rx="48" fill="#1b1035"/>
+  <g fill="#c8b6ff">
+    <path d="M158 40a54 54 0 1 0 58 74 44 44 0 1 1-58-74z"/>
+    <circle cx="86" cy="86" r="6"/>
+    <circle cx="66" cy="122" r="5"/>
+    <circle cx="104" cy="150" r="4"/>
+  </g>
+  <g fill="none" stroke="#7c6fd6" stroke-width="3" stroke-linecap="round">
+    <line x1="86" y1="86" x2="66" y2="122"/>
+    <line x1="86" y1="86" x2="104" y2="150"/>
+  </g>
+</svg>
