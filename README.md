@@ -39,6 +39,8 @@ Dreaming turns completed DSH conversations into a local, versioned memory wiki. 
 
 详见 [一页使用说明](使用说明.md)、[架构说明](ARCHITECTURE.md) 和 [更新记录](CHANGELOG.md)。
 
+升级保留现有记忆与设置，详见 [无损升级与回退](UPGRADING.md)。
+
 ## 数据与运行方式
 
 记忆默认保存在本机 `~/.dsh/dreaming-memory`。配置中可更换目录。完整的已完成会话会被送给你选定的模型提供方进行整理，可能包含工具输出。API Key 沿用 DSH 的配置，插件不另存一份。

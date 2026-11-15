@@ -14,4 +14,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm test
+      - name: Verify lossless upgrade from v0.4.0
+        run: |
+          git fetch --depth=1 origin tag v0.4.0
+          mkdir -p "$RUNNER_TEMP/dsh-upgrade-old"
+          git archive v0.4.0 | tar -x -C "$RUNNER_TEMP/dsh-upgrade-old"
+          node scripts/verify-upgrade.mjs "$RUNNER_TEMP/dsh-upgrade-old" .
       - run: npm pack --ignore-scripts
