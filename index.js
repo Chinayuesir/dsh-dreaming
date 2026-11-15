@@ -547,7 +547,7 @@ async function sessionCatalog(query) {
 
 /** Register authenticated Dreaming routes and the desktop scheduler. */
 function buildWeb(ctx, config, journal = createRunLog(join(stateDir(config), 'dreaming-logs.json'), ctx.logger), usage = createMemoryUsage()) {
-  let job = null, controller;
+  let job = null, controller, activeRun;
   const historyPath = join(stateDir(config), 'dreaming-last-job.json');
   let pendingWrite = Promise.resolve();
   const persist = () => {
@@ -568,7 +568,7 @@ function buildWeb(ctx, config, journal = createRunLog(join(stateDir(config), 'dr
       startedAt: new Date().toISOString(), message: '准备读取会话' };
     job = current;
     persist();
-    runConfiguredDream(ctx, config, memoryDir, { ...options, signal, logId:current.id, trigger }, (phase, message) => {
+    activeRun = runConfiguredDream(ctx, config, memoryDir, { ...options, signal, logId:current.id, trigger }, (phase, message) => {
       Object.assign(current, { phase, message });
       persist();
     }, model => {
@@ -586,6 +586,7 @@ function buildWeb(ctx, config, journal = createRunLog(join(stateDir(config), 'dr
     }).finally(() => {
       current.finishedAt = new Date().toISOString();
       persist();
+      return pendingWrite;
     });
     return current;
   };
@@ -850,11 +851,13 @@ function buildWeb(ctx, config, journal = createRunLog(join(stateDir(config), 'dr
   timer.unref();
   void tick();
 
-  return () => {
+  return async () => {
     disposed = true;
     clearInterval(timer);
     controller?.abort();
     try { unregister?.(); } catch { /* best-effort */ }
+    await activeRun;
+    await pendingWrite;
   };
 }
 
@@ -894,6 +897,6 @@ export function apply(ctx, config) {
     unregisterContext?.();
     unregisterReader?.();
     try { unregisterTool?.(); } catch { /* best-effort */ }
-    try { disposeWeb?.(); } catch { /* best-effort */ }
+    try { return disposeWeb?.(); } catch { /* best-effort */ }
   };
 }

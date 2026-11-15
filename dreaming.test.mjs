@@ -250,7 +250,7 @@ test('desktop single-session run publishes when the organizer submits a structur
     const last = (await request(source + '&offset=24000')).data();
     assert.match(last.text, /LAST page/);
     assert.equal(last.nextOffset, null);
-  } finally { dispose(); }
+  } finally { await dispose(); }
 }));
 
 test('manual edits create versions and reject stale saves and symlinks', () => withDir(async dir => {
@@ -318,7 +318,7 @@ test('real routes serve the workbench, protect the store and start a background 
     const log = (await request('/dreaming/api/logs')).data().selected;
     assert.equal(log.status, 'failed');
     assert.ok(log.entries.some(entry => entry.level === 'error' && /未读完整/.test(entry.message)));
-  } finally { dispose(); }
+  } finally { await dispose(); }
 }));
 
 const readFileForScript = await readFile(new URL('./ui/app.js', import.meta.url), 'utf8');
@@ -473,7 +473,7 @@ test('conversation binding survives restart as a scoped reference without inject
     assert.doesNotMatch(JSON.stringify(record.entries),/Sensitive private/);
     await restarted.bind(dir,'a',null);
     assert.equal(restarted.text(dir,'a'),'');
-  }finally{dispose();}
+  }finally{await dispose();}
 }));
 
 test('new conversations receive only their project and shared catalogs without any history lookup',()=>withDir(async dir=>{
@@ -507,7 +507,7 @@ test('new conversations receive only their project and shared catalogs without a
     await writeFile(join(stage,'_index.md'),'# 尚未审核的提议\n');
     await createDraft(root,stage,{status:'complete'},[],before);
     assert.doesNotMatch(memoryCatalogContext(dir,'/work/A'),/尚未审核/);
-  }finally{dispose();}
+  }finally{await dispose();}
 }));
 
 test('default memory can be configured with no saved conversations and survives the first new turn',()=>withDir(async dir=>{
@@ -527,7 +527,7 @@ test('default memory can be configured with no saved conversations and survives 
     assert.equal((await request('/dreaming/api/usage')).data().binding.slug,'topic');
     assert.equal((await request('/dreaming/api/use',{target:'default',clear:true})).status,200);
     assert.equal(createMemoryUsage().text(dir,'next-new','/new/project'),'');
-  }finally{dispose();}
+  }finally{await dispose();}
 }));
 
 test('project defaults override shared defaults, stay in scope, and explicit selections take precedence',()=>withDir(async dir=>{
