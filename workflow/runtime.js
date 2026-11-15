@@ -6,6 +6,7 @@ import { runDreaming } from './index.js';
 import { LEAD_SYSTEM, LEAD_RESULT, ANALYZER_SYSTEM, ANALYZER_RESULT, ORGANIZER_SYSTEM, ORGANIZER_RESULT } from './prompts.js';
 import { worker, pageReader, memoryTools, transcriptTool } from './worker.js';
 import { parseDateBounds, sessionTimestamp } from './dates.js';
+import { createDraft, pendingDraft, fingerprint } from './review.js';
 
 export const safeSlug = value => typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,79}$/.test(value);
 const versionPattern = /^v\d+-[0-9a-f]{8}$/;
@@ -279,7 +280,10 @@ async function collect(ctx, directory, processed, options, signal) {
     signal.throwIfAborted();
     if (inputs.size >= maxSessions) break;
     if (!header?.id || header.delegationDepth || header.id === options.excludeSessionId) continue;
-    if (!single && options.workspace && header.cwd !== options.workspace) continue;
+    if (options.workspace && header.cwd !== options.workspace) {
+      if (single) throw Error('所选会话不属于当前项目范围，请切换项目后重试');
+      continue;
+    }
     const stamp = sessionTimestamp(header);
     if (bounded && (!Number.isFinite(stamp) || stamp < start || stamp > end)) continue;
     try {
@@ -332,6 +336,9 @@ export async function executeDream(ctx, root, options, helpers, progress = () =>
   const timeout = AbortSignal.timeout(20 * 60 * 1000);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   return locked(root, async () => {
+    if (await pendingDraft(root)) throw Error('请先确认或放弃当前待审核草稿');
+    const baseFingerprint = await fingerprint(root);
+    const conflicts = [];
     const directory = await mkdtemp(join(tmpdir(), 'dsh-dreaming-'));
     try {
       const processed = Object.assign(Object.create(null), await json(join(await published(root), 'processed.json'), {}));
@@ -359,9 +366,9 @@ export async function executeDream(ctx, root, options, helpers, progress = () =>
           discard: ({ stage }) => rm(stage, { recursive: true, force: true }),
           commit: async ({ stage, report }) => {
             signal.throwIfAborted();
-            progress('publishing', '发布记忆版本');
+            progress('publishing', '生成变化清单，等待用户确认发布');
             await writeFile(join(stage, 'processed.json'), JSON.stringify(processed), { mode: 0o600 });
-            return publish(root, stage, { kind: 'dream', ...report, model: selection }, signal);
+            return createDraft(root, stage, { kind: 'dream', ...report, logId:options.logId, model: selection, scope:options.workspace || 'shared' }, conflicts, baseFingerprint);
           },
           reader: version => helpers.memoryReader(root, version),
         },
@@ -384,19 +391,32 @@ export async function executeDream(ctx, root, options, helpers, progress = () =>
                 throw Error('Analyzer 未读完已有主题 · ' + note.slug);
               }
             }
-            return { summary: redact(result.summary), notes };
+            return { summary: redact(result.summary), notes, conflicts:result.conflicts ?? [] };
             } catch (error) {
               progress('analyzing', `会话 ${input.id} · ${redact(error.message)}`, 'error');
               throw error;
             }
           },
           apply: async ({ input, stage, result }) => {
+            const originalFacts = new Map();
+            for (const note of result.notes) originalFacts.set(note.slug, helpers.parseNoteFile(await helpers.readNoteFile(join(stage,'notes',note.slug+'.md')) || '').facts);
             for (const note of result.notes) {
               const path = join(stage, 'notes', note.slug + '.md');
               const markdown = await helpers.readNoteFile(path);
               const merged = helpers.renderNoteFile(note, markdown ? { ...helpers.parseNoteFile(markdown), markdown } : null);
               await atomic(path, merged);
               if (await helpers.readNoteFile(path) !== merged) throw Error('记忆写入验证失败');
+            }
+            if (!Array.isArray(result.conflicts) || result.conflicts.length > 20) throw Error('冲突提议格式无效');
+            for (const item of result.conflicts) {
+              if (!safeSlug(item.slug) || ![item.oldFact,item.newFact,item.reason].every(v=>typeof v === 'string' && v.trim() && v.length <= 2000 && !/[\r\n]/.test(v))) throw Error('冲突提议字段无效');
+              const note = result.notes.find(note=>note.slug === item.slug);
+              const facts = helpers.parseNoteFile(await helpers.readNoteFile(join(stage,'notes',item.slug+'.md')) || '').facts;
+              const fresh = note?.facts.find(fact=>fact.text === item.newFact);
+              const newFact = fresh ? facts.find(fact=>fact === fresh.text || fact === `${fresh.text} (${fresh.date})`) : null;
+              if (!fresh || !newFact || !originalFacts.get(item.slug)?.includes(item.oldFact) || item.oldFact === newFact || /^\[(已被替代|待核实)\]/.test(item.oldFact)) throw Error('冲突必须引用同一主题中的原事实和本次新增事实');
+              if (conflicts.some(c=>c.slug === item.slug && [c.oldFact,c.newFact].some(f=>f === item.oldFact || f === newFact))) throw Error('同一事实出现多次冲突提议，请减少整理会话后重试');
+              conflicts.push({id:randomUUID(),slug:item.slug,oldFact:item.oldFact,newFact,summary:note.summary,reason:redact(item.reason)});
             }
             processed[input.id] = inputs.get(input.id).hash;
             progress('analyzing', `会话 ${input.id} · 已暂存 ${result.notes.length} 个主题，等待全局整理`);
@@ -411,6 +431,8 @@ export async function executeDream(ctx, root, options, helpers, progress = () =>
           for (const note of store.notes) {
             if (!pages.complete(note.slug, await read(note.slug))) throw Error('Organizer 未读完整记忆库，未发布版本');
           }
+          const protectedSlugs = new Set(conflicts.map(c=>c.slug));
+          if (Array.isArray(result.merges)) result.merges = result.merges.filter(m=>!protectedSlugs.has(m.from) && !protectedSlugs.has(m.into));
           return organize(stage, store, result, helpers);
         } },
       };

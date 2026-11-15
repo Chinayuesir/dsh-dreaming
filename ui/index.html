@@ -22,16 +22,19 @@
     </div>
   </header>
   <nav aria-label="梦境工作台">
-    <button data-tab="library" aria-current="page">记忆库</button>
-    <button data-tab="memoryMap">记忆地图</button>
-    <button data-tab="runPanel">梦境运行</button>
-    <button data-tab="logsPanel">运行日志</button>
-    <button data-tab="settings">配置与版本</button>
+    <button data-tab="library" aria-current="page">记忆</button>
+    <button data-tab="runPanel">整理</button>
+    <button data-tab="settings">设置</button>
   </nav>
   <div id="status" class="notice" role="status" hidden></div>
+  <section class="scope-bar card">
+    <label>记忆范围<select id="scopeSelect"><option value="">共享记忆（含原有记忆）</option></select></label>
+    <p id="scopeHint" class="muted">项目记忆独立整理和读取；原有记忆保留在共享范围。</p>
+    <button id="pendingNotice" hidden>有待审核草稿 · 前往确认</button>
+  </section>
   <section id="library" class="tab">
-    <section class="card quick-start" aria-labelledby="quickTitle">
-      <h2 id="quickTitle">快速上手</h2>
+    <details class="card quick-start" aria-labelledby="quickTitle">
+      <summary id="quickTitle">第一次使用？整理 → 确认 → 在对话中使用</summary>
       <ol class="quick-steps">
         <li>
           <strong>整理一个会话</strong>
@@ -40,12 +43,12 @@
         </li>
         <li>
           <strong>看看记住了什么</strong>
-          <p>完成后在记忆库搜索主题，打开条目核对事实。</p>
+          <p>先在发布审核中确认草稿，再到记忆库查看。</p>
           <button type="button" id="quickSearch">搜索记忆</button>
         </li>
         <li>
           <strong>在对话中使用</strong>
-          <p>把示例粘贴到 Harness 对话框，替换「项目名或问题」。</p>
+          <p>新对话可按需读取记忆；也可以把主题设为默认参考。</p>
           <button type="button" id="copyPrompt" class="primary">复制对话示例</button>
         </li>
       </ol>
@@ -56,9 +59,22 @@
         <summary>记忆是怎么组织的？</summary>
         <p><strong>记忆版本 → 索引 → 主题分组 → Markdown 条目 → 事实与出处。</strong></p>
         <p>索引按领域列出主题和一句摘要。每个主题有独立条目，记录事实、日期和会话出处，并链接到相关主题。领域分组写在索引里，条目集中存放。</p>
-        <p>这沿用了 Cookbook 的 Wiki 结构。Harness 通过只读工具按需读取索引和条目。可在「配置与版本」切换整份记忆的版本。</p>
+        <p>这沿用了 Cookbook 的 Wiki 结构。Harness 通过只读工具按需读取索引和条目。可在「设置」切换整份记忆的版本。</p>
       </details>
-    </section>
+    </details>
+    <div class="library-actions"><p>新对话可按需查阅记忆。需要优先查阅某个主题时，打开主题并设为默认参考。</p></div>
+    <details id="usageDrawer" class="section-drawer"><summary>优先查阅与使用记录</summary>
+  <section id="usagePanel" class="subpanel">
+    <article class="card">
+      <p class="eyebrow">MEMORY IN CONVERSATION</p><h2>把记忆带回对话</h2>
+      <label>应用到<select id="useSession"><option value="">默认参考（含空白新对话）</option></select></label><button id="reloadUseSessions">刷新已有对话</button>
+      <p class="muted">无需先发送消息或选择历史会话。打开一个主题，点击「设为默认参考」，之后未单独指定主题的对话（包括新对话）都会获得该主题的查阅入口，正文由助手按需读取。项目默认只在本项目生效，共享默认可用于其他项目。也可在上方单独选择已有对话。</p>
+      <p id="bindingStatus" role="status">未设置默认主题也可通过目录按需读取。</p>
+      <div class="row"><button id="goLibrary">选择记忆主题</button><button id="clearBinding">清除指定主题</button><button id="refreshUsage">刷新记录</button></div>
+    </article>
+    <article class="card"><h2>读取与上下文记录</h2><p class="muted">对话中展开「上下文注入 · dreaming-memory」可查看目录和查阅规则；它不代表已读取事实。这里的“工具已读取”表示正文或索引已返回，仍不代表模型已采纳。旧版节选记录保留供回看，最多 300 条。</p><div id="usageList"></div></article>
+  </section>
+    </details>
     <div class="workspace">
       <aside class="catalog">
         <div class="catalog-head">
@@ -72,6 +88,8 @@
         <header class="row spread detail-head">
           <div><h2 id="title">选择一条记忆</h2><div id="slug" class="muted"></div></div>
           <div class="row" id="actions" hidden>
+            <button id="useMemory" class="primary">设为默认参考</button>
+            <button id="copyReference">复制引用指令</button>
             <button id="edit">编辑</button>
             <button id="delete" class="danger">移除</button>
             <button id="discard" hidden>取消编辑</button>
@@ -83,8 +101,8 @@
         <textarea id="content" spellcheck="false" hidden></textarea>
       </section>
     </div>
-  </section>
-  <section id="memoryMap" class="tab map-panel" aria-labelledby="mapHeading" hidden>
+    <details id="mapDrawer" class="section-drawer"><summary>用地图浏览记忆</summary>
+  <section id="memoryMap" class="map-panel subpanel" aria-labelledby="mapHeading">
     <header class="map-head">
       <div><p class="map-kicker">MEMORY ATLAS</p><h2 id="mapHeading">记忆地图</h2><p class="muted">沿分组浏览主题，展开条目查看细节和会话出处。</p></div>
       <label class="map-search">筛选地图<input type="search" id="mapSearch" placeholder="搜索分组、主题或摘要"></label>
@@ -104,9 +122,11 @@
       </div>
     </div>
   </section>
+    </details>
+  </section>
   <section id="runPanel" class="tab" hidden>
     <article class="card">
-      <div class="row spread"><div><h2>整理历史会话</h2><p>按会话分析，再统一整理主题与交叉链接。每次发布保留版本。</p></div><span id="jobBadge" class="badge">待运行</span></div>
+      <div class="row spread"><div><h2>整理历史会话</h2><p>按会话分析，再统一整理主题与交叉链接。整理完成后先审核，确认发布时保留版本。</p></div><span id="jobBadge" class="badge">待运行</span></div>
       <form id="runForm" class="run-controls">
         <label>整理方式<select id="runMode">
           <option value="batch">按日期批量整理</option>
@@ -143,15 +163,27 @@
     <article class="card">
       <h2>运行进度</h2>
       <ol class="steps" id="steps">
-        <li data-phase="collecting">收集会话</li><li data-phase="planning">编排</li><li data-phase="analyzing">逐会话分析</li><li data-phase="organizing">全局整理</li><li data-phase="publishing">发布版本</li>
+        <li data-phase="collecting">收集会话</li><li data-phase="planning">编排</li><li data-phase="analyzing">逐会话分析</li><li data-phase="organizing">全局整理</li><li data-phase="publishing">生成待审核草稿</li>
       </ol>
       <p id="jobMessage" role="status">准备好后开始一次梦境。</p>
       <p class="muted" id="jobModel" hidden></p>
       <div id="report"></div>
       <button id="openLogs" type="button">查看运行日志</button>
     </article>
+    <details id="reviewDrawer" class="section-drawer"><summary>审核草稿与发布变化</summary>
+  <section id="reviewPanel" class="subpanel">
+    <article class="card">
+      <div class="row spread wrap"><div><p class="eyebrow">REVIEW & PUBLISH</p><h2>先核对，再记住</h2></div><button id="refreshReview">刷新草稿</button></div>
+      <p class="muted">只有确认发布后，新内容才会供对话读取。疑似冲突由模型提出，可能有遗漏；请同时核对修改内容。</p>
+      <p id="reviewSummary" role="status">正在读取草稿…</p>
+      <div id="conflictList"></div><div id="changeList"></div>
+      <div class="row wrap"><button id="publishDraft" class="primary" hidden>确认以上变化并发布</button><button id="discardDraft" class="danger" hidden>放弃草稿</button></div>
+    </article>
+    <article class="card"><h2>实际发布的变化</h2><p id="publishedSummary" class="muted">确认后显示最终结果；历史版本也可查看变化。</p><div id="publishedChanges"></div></article>
   </section>
-  <section id="logsPanel" class="tab" hidden>
+    </details>
+    <details id="logsDrawer" class="section-drawer"><summary>运行日志与排错</summary>
+  <section id="logsPanel" class="subpanel">
     <article class="card">
       <div class="row spread wrap">
         <div><h2>运行日志</h2><p class="muted">记录阶段、模型调用、格式重试和报错。保留最近 20 次任务，每次最多 300 条。</p></div>
@@ -172,6 +204,8 @@
       </div>
       <p class="muted">日志不主动保存对话正文、提示词或模型原始回复；报错会做常见凭据脱敏。复制分享前请检查内容。</p>
     </article>
+  </section>
+    </details>
   </section>
   <section id="settings" class="tab" hidden>
     <article class="card">
@@ -196,7 +230,7 @@
       <p class="muted">更改路径后将打开另一个记忆库。现有记忆保留在原目录。</p>
     </article>
     <article class="card">
-      <h2>夜间梦境</h2>
+      <h2>夜间梦境</h2><p class="muted">计划使用保存时选定的项目范围，只生成待审核草稿。已有草稿时跳过，确认或放弃后下个计划时点继续。</p>
       <form class="row wrap" id="scheduleForm">
         <label class="check"><input id="scheduleEnabled" type="checkbox"> 启用每天自动整理</label>
         <label class="sr" for="scheduleTime">运行时间</label>

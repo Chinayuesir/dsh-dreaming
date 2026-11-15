@@ -6,14 +6,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { executeDream, published, versions } from './workflow/runtime.js';
+import { pendingDraft, reviewDraft, scopeRoot, createDraft, fingerprint, resolveConflict } from './workflow/review.js';
+import { createMemoryUsage } from './workflow/usage.js';
+import { memoryCatalogContext } from './workflow/context.js';
+import { stageCopy, atomic } from './workflow/runtime.js';
 import { parseDateBounds, sessionDateRanges } from './workflow/dates.js';
 
 const source = (await readFile(new URL('./index.js', import.meta.url), 'utf8'))
   .replace("import { defineTool } from '@deepseek-ai/dsh-tools';", 'const defineTool = definition => definition;')
+  .replace("import { createUserMessage } from '@deepseek-ai/dsh-llm';", 'const createUserMessage = input => ({...input,role:"user",id:randomUUID()});')
   .replace(/'(\.\/workflow\/[^']+)'/g, (_match, path) => JSON.stringify(new URL(path, import.meta.url).href))
   .replaceAll('import.meta.url', JSON.stringify(import.meta.url))
   + '\nexport { readStore, readNote, writeNote, buildWeb, workflowHelpers, buildReaderTool, latestSlot };';
-const { readStore, readNote, writeNote, buildWeb, workflowHelpers, buildReaderTool, latestSlot } =
+const { readStore, readNote, writeNote, buildWeb, workflowHelpers, buildReaderTool, latestSlot, apply } =
   await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 async function withDir(fn) {
@@ -96,7 +101,10 @@ test('scoped workers read full inputs, merge without losing prose, publish and s
   await writeFile(join(dir,'notes','old.md'), '# Old topic\n\nHand edited paragraph.\n\n## Facts\n- Old provenance\n');
   const {ctx, roles} = harness();
   const report = await executeDream(ctx, dir, {}, workflowHelpers);
-  assert.equal(report.status,'complete');
+  assert.equal(report.status,'review');
+  assert.equal((await readStore(dir)).notes.some(n=>n.slug==='topic'),false);
+  const approval = await reviewDraft(dir,{id:report.draftId,action:'publish',confirm:true},workflowHelpers);
+  report.version = approval.version;
   assert.deepEqual(roles,['lead','analyzer','organizer']);
   const store = await readStore(dir);
   assert.equal(store.count,1);
@@ -152,7 +160,8 @@ test('single-session analysis corrects malformed JSON once and publishes a fence
   assert.equal(replies, 2);
   assert.ok(events.some(event => event.level === 'warn' && /纠正一次/.test(event.message)));
   assert.doesNotMatch(JSON.stringify(events), /FIRST page|summary.*Analyzed/);
-  assert.equal(report.status, 'complete');
+  assert.equal(report.status, 'review');
+  await reviewDraft(dir,{id:report.draftId,action:'publish',confirm:true},workflowHelpers);
   assert.match((await readNote(dir,'topic')).content, /Exact outcome/);
 }));
 
@@ -202,13 +211,13 @@ test('desktop single-session run publishes when the organizer submits a structur
       if (job.status !== 'running') break;
       await new Promise(resolve=>setTimeout(resolve,10));
     }
-    assert.equal(job.status, 'complete', `${job.phase}: ${job.message}`);
+    assert.equal(job.status, 'review', `${job.phase}: ${job.message}`);
     assert.equal(job.phase, 'publishing');
     assert.equal(job.report.inputsProcessed, 1);
     assert.deepEqual(job.model, chosen);
     assert.equal((await request('/dreaming/api/logs', undefined, false)).status, 401);
     const logs = (await request('/dreaming/api/logs?id=' + job.id)).data();
-    assert.equal(logs.selected.status, 'complete');
+    assert.equal(logs.selected.status, 'review');
     assert.deepEqual(logs.selected.model, chosen);
     assert.deepEqual([...new Set(logs.selected.entries.map(entry => entry.phase))],
       ['system','collecting','planning','analyzing','organizing','publishing']);
@@ -216,7 +225,10 @@ test('desktop single-session run publishes when the organizer submits a structur
     assert.doesNotMatch(JSON.stringify(logs), /FIRST page|Child evidence|Exact outcome|sk-abcd/);
     assert.ok(routed.length > 0);
     for (const selection of routed) assert.deepEqual(selection, chosen);
-    assert.deepEqual((await versions(dir)).find(version => version.version === job.report.version).model, chosen);
+    assert.equal((await readStore(dir)).notes.some(n=>n.slug==='topic'),false);
+    const approved = await request('/dreaming/api/review',{id:job.report.draftId,action:'publish',confirm:true});
+    assert.equal(approved.status,200);
+    assert.deepEqual((await versions(dir)).find(version => version.version === approved.data().version).model, chosen);
     const followDefault = (await request('/dreaming/api/model',{model:null})).data();
     assert.equal(followDefault.configured, null);
     assert.deepEqual(followDefault.effective, {provider:'test',model:'fixture'});
@@ -225,7 +237,7 @@ test('desktop single-session run publishes when the organizer submits a structur
     assert.match(memory, /Exact outcome/);
     assert.match(memory, /Earlier decisions/);
 
-    const query = 'name=topic&version=' + encodeURIComponent(job.report.version);
+    const query = 'name=topic&version=' + encodeURIComponent(approved.data().version);
     const topic = (await request('/dreaming/api/note?' + query + '&view=map')).data();
     assert.deepEqual(topic.sources.map(source => source.id), ['root']);
     const source = '/dreaming/api/map-source?' + query + '&id=root';
@@ -342,7 +354,8 @@ test('date filters include the complete end day and reject sessions outside the 
   await mkdir(join(dir, 'notes'));
   await writeFile(join(dir, 'notes', 'old.md'), '# Old topic\n');
   const report = await executeDream(ctx, dir, { since: '2026-11-09', until: '2026-11-09' }, workflowHelpers);
-  assert.equal(report.status, 'complete');
+  assert.equal(report.status, 'review');
+  await reviewDraft(dir,{id:report.draftId,action:'publish',confirm:true},workflowHelpers);
   assert.deepEqual(reads, ['root', 'child']);
 }));
 
@@ -363,7 +376,8 @@ test('a selected session bypasses date filters and never falls back to another s
   const report = await executeDream(ctx, dir, {
     sessionId: 'root', since: '2099-01-01', maxSessions: 6,
   }, workflowHelpers);
-  assert.equal(report.status, 'complete');
+  assert.equal(report.status, 'review');
+  await reviewDraft(dir,{id:report.draftId,action:'publish',confirm:true},workflowHelpers);
   assert.equal(report.inputsProcessed, 1);
   assert.deepEqual(reads, ['root', 'child']);
   await assert.rejects(executeDream(ctx, dir, { sessionId: 'busy' }, workflowHelpers), /尚未正常完成/);
@@ -374,3 +388,161 @@ test('nightly due slot is the latest local time at or before now', () => {
   assert.equal(latestSlot('01:00', new Date(2026, 10, 9, 0, 59)), new Date(2026, 10, 8, 1, 0).toISOString());
   assert.equal(latestSlot('01:00', new Date(2026, 10, 9, 1, 0)), new Date(2026, 10, 9, 1, 0).toISOString());
 });
+
+test('conflicts remain private drafts until explicit decisions; approved replacement retains history',()=>withDir(async dir=>{
+  const oldFact='使用 A 模型 (root event 1) (2026-11-01)';
+  await mkdir(join(dir,'notes'));
+  await writeFile(join(dir,'notes','old.md'),'# Old\n');
+  await writeFile(join(dir,'notes','topic.md'),`# 模型\nSummary: 使用 A 模型\n\n## Facts\n- ${oldFact}\n`);
+  const {ctx}=harness({analyzerReply(result,messages){
+    if (!messages.some(m=>m.toolName==='read_memory')) return calls('read_memory',[{slug:'topic',offset:0}]);
+    result.notes[0].facts=[{date:'2026-11-15',text:'改用 B 模型 (root event 3)'}];
+    result.notes[0].summary='当前使用 B 模型';
+    result.conflicts=[{slug:'topic',oldFact,newFact:'改用 B 模型 (root event 3)',reason:'后续会话明确改用 B'}];
+    return output(result);
+  }});
+  const report=await executeDream(ctx,dir,{},workflowHelpers);
+  assert.equal(report.status,'review');
+  assert.equal(report.version,null);
+  const draft=await pendingDraft(dir);
+  assert.equal(draft.conflicts.length,1);
+  assert.ok(draft.changes.some(c=>c.slug==='topic' && c.kind==='modified'));
+  assert.doesNotMatch((await readNote(dir,'topic')).content,/B 模型/);
+  await assert.rejects(reviewDraft(dir,{id:draft.id,action:'publish'},workflowHelpers),/明确确认/);
+  await assert.rejects(reviewDraft(dir,{id:draft.id,action:'publish',confirm:true},workflowHelpers),/每项冲突/);
+  assert.equal((await pendingDraft(dir)).id,draft.id);
+  const result=await reviewDraft(dir,{id:draft.id,action:'publish',confirm:true,decisions:{[draft.conflicts[0].id]:'replace'}},workflowHelpers);
+  const note=(await readNote(dir,'topic')).content;
+  assert.match(note,/\[已被替代\] 使用 A/);
+  assert.match(note,/Summary: 当前使用 B/);
+  assert.match(note,/替代为：改用 B/);
+  assert.equal(await pendingDraft(dir),null);
+  assert.equal(result.actualChanges.find(c=>c.slug==='topic').after,note);
+  await assert.rejects(reviewDraft(dir,{id:draft.id,action:'publish',confirm:true},workflowHelpers),/草稿已变化/);
+  const c=draft.conflicts[0], raw=draft.changes.find(c=>c.slug==='topic').after;
+  assert.doesNotMatch(resolveConflict(raw,c,'keep-old'),/改用 B/);
+  assert.match(resolveConflict(raw,c,'uncertain'),/\[待核实\] 使用 A/);
+}));
+
+test('editing during review rejects stale publication; discard leaves the edited version intact',()=>withDir(async dir=>{
+  await mkdir(join(dir,'notes')); await writeFile(join(dir,'notes','old.md'),'# Original\n');
+  const report=await executeDream(harness().ctx,dir,{},workflowHelpers);
+  const original=await readNote(dir,'old');
+  await writeNote(dir,{action:'save',name:'old',revision:original.revision,content:'# Human correction\n'});
+  await assert.rejects(reviewDraft(dir,{id:report.draftId,action:'publish',confirm:true},workflowHelpers),/已被编辑/);
+  assert.match((await readNote(dir,'old')).content,/Human correction/);
+  await reviewDraft(dir,{id:report.draftId,action:'discard'},workflowHelpers);
+  assert.equal(await pendingDraft(dir),null);
+  assert.match((await readNote(dir,'old')).content,/Human correction/);
+}));
+
+test('project readers isolate stores, explicit shared reads work, and tool reads leave bounded metadata',()=>withDir(async dir=>{
+  const usage=createMemoryUsage();
+  for(const [scope,text] of [['','Shared'],['/work/A','Project A'],['/work/B','Project B']]){
+    const root=scopeRoot(dir,scope);await mkdir(join(root,'notes'),{recursive:true});await writeFile(join(root,'notes','topic.md'),`# ${text}\n`);
+  }
+  const reader=buildReaderTool({memoryDir:dir},undefined,usage);
+  const exec={agent:{session:{id:'chat-a',header:{cwd:'/work/A'}}},signal:new AbortController().signal};
+  assert.match(JSON.parse(await reader.execute({slug:'topic'},exec)).text,/Project A/);
+  assert.match(JSON.parse(await reader.execute({slug:'topic',scope:'shared'},exec)).text,/Shared/);
+  assert.equal((await usage.list(dir,'chat-a')).entries.length,2);
+  assert.equal((await usage.list(dir,'chat-b')).entries.length,0);
+  assert.throws(()=>scopeRoot(dir,'../B'),/完整工作区/);
+  const {ctx}=harness();
+  await assert.rejects(executeDream(ctx,scopeRoot(dir,'/work/A'),{sessionId:'root',workspace:'/work/A'},workflowHelpers),/不属于当前项目/);
+}));
+
+test('conversation binding survives restart as a scoped reference without injecting or logging body',()=>withDir(async dir=>{
+  const project=scopeRoot(dir,'/work/A'); await mkdir(join(project,'notes'),{recursive:true});
+  await writeFile(join(project,'notes','topic.md'),'# Topic\n\nSensitive private body\n');
+  const note=await readNote(project,'topic');await writeNote(project,{action:'save',name:'topic',revision:note.revision,content:note.content});
+  const ctx={sessionQuery:{listSessions:async()=>[{header:{id:'a',cwd:'/work/A'}},{header:{id:'b',cwd:'/work/B'}}]}};
+  const {request,dispose}=server(ctx,{memoryDir:dir,stateDir:dir});
+  try{
+    const path='/dreaming/api/use?scope='+encodeURIComponent('/work/A');
+    assert.equal((await request(path,{sessionId:'b',slug:'topic'})).status,400);
+    assert.equal((await request(path,{sessionId:'a',slug:'topic'})).status,200);
+    const restarted=createMemoryUsage();
+    assert.equal(restarted.text(dir,'b'),'');
+    assert.match(restarted.text(dir,'a','/work/A'),/Topic/);
+    assert.doesNotMatch(restarted.text(dir,'a','/work/A'),/Sensitive private body/);
+    assert.equal(restarted.text(dir,'a','/work/B'),'');
+    restarted.text(dir,'a');
+    const record=await restarted.list(dir,'a');
+    assert.equal(record.entries.length,0);
+    assert.doesNotMatch(JSON.stringify(record.entries),/Sensitive private/);
+    await restarted.bind(dir,'a',null);
+    assert.equal(restarted.text(dir,'a'),'');
+  }finally{dispose();}
+}));
+
+test('new conversations receive only their project and shared catalogs without any history lookup',()=>withDir(async dir=>{
+  for(const [scope,label] of [['','共享启动指南'],['/work/A','项目A指南'],['/work/B','其他项目机密']]){
+    const root=scopeRoot(dir,scope);await mkdir(join(root,'notes'),{recursive:true});
+    await writeFile(join(root,'notes','topic.md'),`# ${label}\n\nSECRET_TOPIC_BODY_SHOULD_REQUIRE_TOOL\n`);
+    const note=await readNote(root,'topic');
+    await writeNote(root,{action:'save',name:'topic',revision:note.revision,content:note.content});
+  }
+  let middleware;
+  const dispose=apply({tools:{register:()=>()=>{}},on:(event,handler)=>{assert.equal(event,'agent/pre-step');middleware=handler;return()=>{};}},{memoryDir:dir,stateDir:dir});
+  try{
+    const session={id:'not-in-history',header:{cwd:'/work/A'},seq:0,surface:{nodes:[]},eventAt:()=>undefined};
+    const firstTurn={agent:{session},signal:new AbortController().signal};
+    const decision=await middleware(firstTurn,async()=>({kind:'enter',messages:[]}));
+    assert.equal(decision.messages[0].source.kind,'dreaming-memory');
+    assert.equal(decision.messages[0].source.form,'snapshot');
+    const text=decision.messages[0].content[0].text;
+    assert.match(text,/项目A指南/);assert.match(text,/共享启动指南/);assert.doesNotMatch(text,/其他项目机密/);
+    assert.doesNotMatch(text,/SECRET_TOPIC_BODY/);
+    assert.match(text,/scope="shared"/);
+    assert.match(memoryCatalogContext(dir),/共享启动指南/);
+    const rejected={kind:'reject',reason:'fixture'};
+    assert.equal(await middleware(firstTurn,async()=>rejected),rejected);
+    const abort=new AbortController();abort.abort();
+    const untouched={kind:'enter',messages:[]};
+    assert.equal(await middleware({...firstTurn,signal:abort.signal},async()=>untouched),untouched);
+    // Draft-only topics must not enter the first-turn catalog.
+    const root=scopeRoot(dir,'/work/A'),stage=await stageCopy(root),before=await fingerprint(root);
+    await writeFile(join(stage,'notes','secret.md'),'# 尚未审核的提议\n');
+    await writeFile(join(stage,'_index.md'),'# 尚未审核的提议\n');
+    await createDraft(root,stage,{status:'complete'},[],before);
+    assert.doesNotMatch(memoryCatalogContext(dir,'/work/A'),/尚未审核/);
+  }finally{dispose();}
+}));
+
+test('default memory can be configured with no saved conversations and survives the first new turn',()=>withDir(async dir=>{
+  await mkdir(join(dir,'notes'));await writeFile(join(dir,'notes','topic.md'),'# Shared start\n\nFirst-message reference.\n');
+  const note=await readNote(dir,'topic');await writeNote(dir,{action:'save',name:'topic',revision:note.revision,content:note.content});
+  const ctx={sessionQuery:{listSessions:async()=>{throw Error('history unavailable');}}};
+  const {request,dispose}=server(ctx,{memoryDir:dir,stateDir:dir});
+  try{
+    const response=await request('/dreaming/api/use',{target:'default',slug:'topic'});
+    assert.equal(response.status,200,response.text);
+    const usage=createMemoryUsage();
+    assert.match(usage.text(dir,undefined,'/new/project'),/Shared start/);
+    assert.doesNotMatch(usage.text(dir,undefined,'/new/project'),/First-message reference/);
+    assert.equal((await usage.list(dir)).entries.length,0,'no fake read record before a session exists');
+    assert.match(usage.text(dir,'brand-new','/new/project'),/Shared start/);
+    assert.equal((await usage.list(dir,'brand-new')).entries.length,0);
+    assert.equal((await request('/dreaming/api/usage')).data().binding.slug,'topic');
+    assert.equal((await request('/dreaming/api/use',{target:'default',clear:true})).status,200);
+    assert.equal(createMemoryUsage().text(dir,'next-new','/new/project'),'');
+  }finally{dispose();}
+}));
+
+test('project defaults override shared defaults, stay in scope, and explicit selections take precedence',()=>withDir(async dir=>{
+  const usage=createMemoryUsage(),base={slug:'topic',version:'v1-12345678',title:'Topic',truncated:false};
+  await usage.bindDefault(dir,'',{...base,scope:'',title:'SHARED DEFAULT',text:'LEGACY BODY MUST NOT BE INJECTED'});
+  await usage.bindDefault(dir,'/A',{...base,scope:'/A',title:'A DEFAULT',text:'LEGACY BODY MUST NOT BE INJECTED'});
+  assert.match(usage.text(dir,'a','/A'),/A DEFAULT/);
+  assert.doesNotMatch(usage.text(dir,'b','/B'),/A DEFAULT/);
+  assert.match(usage.text(dir,'b','/B'),/SHARED DEFAULT/);
+  await usage.bind(dir,'a',{...base,scope:'/A',title:'EXPLICIT',text:'LEGACY BODY MUST NOT BE INJECTED'});
+  assert.match(usage.text(dir,'a','/A'),/EXPLICIT/);
+  assert.doesNotMatch(usage.text(dir,'a','/A'),/LEGACY BODY/);
+  await usage.bind(dir,'a',null);
+  assert.match(usage.text(dir,'a','/A'),/A DEFAULT/);
+  await usage.bindDefault(dir,'/A',null);
+  assert.match(usage.text(dir,'another-a','/A'),/SHARED DEFAULT/);
+  await usage.list(dir);
+}));

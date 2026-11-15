@@ -68,6 +68,15 @@ export function createRunLog(path, logger) {
         },
       };
     },
+    async review(id,status,message) {
+      await ready;
+      const run = runs.find(run=>run.id === id);
+      if (!run) return;
+      run.status=status;run.reviewedAt=new Date().toISOString();
+      run.entries.push({time:run.reviewedAt,phase:'publishing',level:'info',message:clean(message)});
+      if(run.entries.length>MAX_ENTRIES){run.entries.shift();run.dropped++;}
+      await persist();
+    },
     async read(id) {
       await ready;
       const selected = id ? runs.find(run => run.id === id) : runs[0];

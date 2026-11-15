@@ -133,6 +133,7 @@ export async function runDreaming(adapters, options = {}) {
     report.changes = result.changes;
     report.status = report.failures.length ? 'partial' : 'complete';
     const version = await adapters.memory.commit({ stage, baseVersion: snapshot.version, report, signal });
+    if (version?.status === 'review' && version.draftId) { committed = true; return {...report,...version}; }
     if (typeof version !== 'string' || !version) throw new Error('memory.commit must return a version identifier');
     committed = true;
     return { ...report, version };

@@ -96,3 +96,14 @@ test('iframe timeout produces visible feedback', () => {
   const tree = h.render(Frame);
   assert.match(tree.children[1].children[0].children[0], /超时/);
 });
+
+test('the memory-use menu keeps the chosen conversation and selects use mode',()=>{
+  const h=harness();h.setLayout({selectPanel:()=>{}});
+  const item=h.menu.resolve({sessionId:'current-chat'}).find(item=>item.id==='use-memory');
+  item.run();
+  const panel=h.render(h.registrations.get('main').component);
+  const frame=panel.children.find(child=>typeof child?.type==='function');
+  const url=new URL(find(h.render(frame.type,frame.props,true),'iframe').props.src,'https://app.example');
+  assert.equal(url.searchParams.get('session'),'current-chat');
+  assert.equal(url.searchParams.get('mode'),'use');
+});

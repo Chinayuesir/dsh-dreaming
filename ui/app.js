@@ -2,15 +2,17 @@
 const byId = id => document.getElementById(id);
 let store, selected, editing = false, lastJob, reading = 0;
 let mapGroup;
+let currentScope = '', review, targetSession = '', scopeEpoch = 0;
 const phases = ['collecting', 'planning', 'analyzing', 'organizing', 'publishing'];
 const stateLabels = {
-  idle: '待运行', running: '运行中', complete: '已完成', partial: '部分完成',
+  review:'待审核', discarded:'已放弃', idle: '待运行', running: '运行中', complete: '已完成', partial: '部分完成',
   empty: '无新增会话', failed: '失败', cancelled: '已取消', interrupted: '已中断',
 };
 const sourceLabels = { environment: '环境变量', profile: '配置文件', saved: '已保存的设置', default: '默认目录' };
 
 async function api(path, body) {
-  const response = await fetch('/dreaming/api/' + path, body === undefined ? undefined : {
+  const requestUrl = '/dreaming/api/' + path + (path.includes('?') ? '&' : '?') + 'scope=' + encodeURIComponent(currentScope);
+  const response = await fetch(requestUrl, body === undefined ? undefined : {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
   const data = await response.json();
@@ -34,7 +36,8 @@ function dirty() { return editing && byId('content').value !== selected?.content
 function mayDiscard() { return !dirty() || confirm('放弃尚未保存的修改？'); }
 function displayList() {
   const query = byId('q').value.trim().toLowerCase();
-  const notes = (store?.notes ?? []).filter(note => [note.title, note.slug, note.summary, ...note.facts].join(' ').toLowerCase().includes(query));
+  const terms = query.split(/\s+/).filter(Boolean);
+  const notes = (store?.notes ?? []).filter(note => terms.every(term=>[note.title, note.slug, note.summary, ...note.facts].join(' ').toLowerCase().includes(term)));
   byId('listCount').textContent = notes.length;
   const list = byId('notes');
   list.replaceChildren();
@@ -50,9 +53,10 @@ function displayList() {
 function displayNote() {
   const preview = byId('preview');
   byId('actions').hidden = !selected;
+  byId('useMemory').textContent = targetSession ? '供选定对话查阅' : '设为默认参考';
   byId('title').textContent = selected?.title || '选择一条记忆';
   byId('slug').textContent = selected?.name || '';
-  byId('edit').hidden = byId('delete').hidden = editing;
+  byId('edit').hidden = byId('delete').hidden = byId('useMemory').hidden = byId('copyReference').hidden = editing;
   byId('save').hidden = byId('discard').hidden = !editing;
   byId('content').hidden = !editing;
   preview.hidden = editing;
@@ -80,7 +84,10 @@ function renderMemoryText(container, content) {
     if (/^# /.test(line) || /^(Links:|\[\[|<!-- dreaming:links -->)/.test(line)) continue;
     if (line.startsWith('- ')) {
       if (!list) { list = make('ul'); container.append(list); }
-      list.append(make('li', line.slice(2)));
+      const item = make('li', line.slice(2));
+      if (line.startsWith('- [已被替代]')) item.className = 'superseded-fact';
+      if (line.startsWith('- [待核实]')) item.className = 'uncertain-fact';
+      list.append(item);
       continue;
     }
     list = null;
@@ -244,7 +251,9 @@ function displayMap() {
   showGroup(mapGroup);
 }
 async function refresh({ settings = false } = {}) {
+  const epoch = scopeEpoch;
   const [library, history] = await Promise.all([api('store'), api('versions')]);
+  if (epoch !== scopeEpoch) return;
   store = library;
   byId('count').textContent = store.count;
   byId('versionCount').textContent = history.versions.length;
@@ -263,6 +272,11 @@ async function refresh({ settings = false } = {}) {
     info.append(make('strong', label), make('div', new Date(version.createdAt).toLocaleString() + ' · ' + version.version, 'muted'));
     if (version.model?.model) info.append(make('div', modelLabel(version.model), 'muted'));
     row.append(info);
+    if (version.actualChanges) {
+      const changes = make('button','查看变化');
+      changes.onclick = ()=>{ showTab('reviewPanel'); displayPublished(version); };
+      row.append(changes);
+    }
     if (version.version === history.current) row.append(make('span', '当前版本', 'badge'));
     else {
       const button = make('button', '切换到此版本');
@@ -353,7 +367,9 @@ byId('dreamModelForm').onsubmit = event => {
   });
 };
 async function poll() {
+  const epoch = scopeEpoch;
   const job = await api('job');
+  if (epoch !== scopeEpoch) return;
   const running = job.status === 'running';
   const failed = job.status === 'failed';
   byId('jobBadge').textContent = stateLabels[job.status] || job.status;
@@ -387,6 +403,8 @@ async function poll() {
   updateRunButton();
   if (justFinished) {
     await refresh();
+    await loadReview();
+    if (job.status === 'review' && !byId('runPanel').hidden) showTab('reviewPanel');
     if (selected && !editing) {
       try { await openNote(selected.name); } catch { clearNote(); }
     }
@@ -464,17 +482,24 @@ byId('copyLogs').onclick = async () => {
   } catch { byId('logNotice').textContent = '无法访问剪贴板，请选中页面中的日志后手动复制。'; }
 };
 function showTab(tab) {
+  const secondary = {memoryMap:['library','mapDrawer'],usagePanel:['library','usageDrawer'],reviewPanel:['runPanel','reviewDrawer'],logsPanel:['runPanel','logsDrawer']};
+  const requested = tab;
+  const drawer = secondary[tab]?.[1];
+  tab = secondary[tab]?.[0] || tab;
   for (const button of tabs) {
     if (button.dataset.tab === tab) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   }
   for (const panel of document.querySelectorAll('.tab')) panel.hidden = panel.id !== tab;
-  if (tab === 'memoryMap') displayMap();
-  if (tab === 'logsPanel') void loadLogs();
+  if (drawer) { byId(drawer).open = true; byId(drawer).scrollIntoView({block:'start',behavior:'smooth'}); }
+  if (requested === 'memoryMap') displayMap();
+  if (requested === 'logsPanel') void loadLogs();
   if (tab === 'settings') {
     refresh().catch(fail);
     void loadDreamModels();
   }
+  if (tab === 'runPanel') loadReview().catch(fail);
+  if (requested === 'usagePanel') loadUsage().catch(fail);
   if (tab === 'runPanel') {
     api('model').then(displayRunModel).catch(() => { byId('runModel').textContent = '暂时无法读取梦境模型设置。'; });
   }
@@ -706,12 +731,162 @@ api('schedule').then(schedule => {
   byId('scheduleEnabled').checked = schedule.enabled;
   byId('scheduleTime').value = schedule.time;
 }).catch(fail);
-refresh({ settings: true }).catch(fail);
-const launchSession = new URLSearchParams(window.location.search).get('session');
-if (launchSession) openSessionPicker(launchSession);
+
 async function monitor() {
   try { await poll(); } catch (error) { fail(error); }
-  if (!byId('logsPanel').hidden) await loadLogs();
+  if (!byId('runPanel').hidden && byId('logsDrawer').open) await loadLogs();
+  if (!byId('library').hidden && byId('usageDrawer').open) await loadUsage().catch(fail);
   setTimeout(monitor, lastJob?.status === 'running' ? 1200 : 4500);
 }
-monitor();
+initializeGovernance().catch(fail).finally(()=>monitor());
+
+
+function displayChanges(container, changes) {
+  container.replaceChildren();
+  if (!changes?.length) { container.append(make('p','没有主题文件变化。','muted')); return; }
+  const labels = {added:'新增',modified:'修改',removed:'移除／合并'};
+  for (const change of changes) {
+    const details = make('details','','change-card');
+    const summary = make('summary');
+    const title = (change.after || change.before).match(/^# (.+)$/m)?.[1] || change.slug;
+    summary.append(make('span',labels[change.kind],'badge change-'+change.kind),make('strong',title),make('small',change.slug));
+    const columns = make('div','','diff-columns');
+    for (const [label,text] of [['之前',change.before],['之后',change.after]]) {
+      const column = make('section');
+      const pre = make('pre');
+      const otherLines = new Set((label === '之前' ? change.after : change.before).split('\n'));
+      for (const line of (text || '（不存在）').split('\n')) {
+        const span = make('span',line+'\n',line && !otherLines.has(line) ? (label === '之前' ? 'diff-removed' : 'diff-added') : '');
+        pre.append(span);
+      }
+      column.append(make('h3',label),pre); columns.append(column);
+    }
+    details.append(summary,columns); container.append(details);
+  }
+}
+function displayPublished(report) {
+  byId('publishedSummary').textContent = report?.actualChanges ? `版本 ${report.version} · 根据最终文件内容计算，包含冲突处理结果` : '该版本没有保存变化清单。新确认发布的版本会记录。';
+  displayChanges(byId('publishedChanges'),report?.actualChanges);
+}
+async function loadReview() {
+  const epoch = scopeEpoch;
+  const result = await api('review');
+  if (epoch !== scopeEpoch) return;
+  byId('pendingNotice').hidden = !result.draft;
+  if (review?.id === result.draft?.id && review) return;
+  review = result.draft;
+  byId('publishDraft').hidden = byId('discardDraft').hidden = !review;
+  byId('conflictList').replaceChildren();
+  displayChanges(byId('changeList'),review?.changes);
+  if (!review) { byId('reviewSummary').textContent = '没有待审核草稿。整理历史会话后，先在这里核对，再确认发布。'; return; }
+  const count = kind=>review.changes.filter(c=>c.kind === kind).length;
+  byId('reviewSummary').textContent = `新增 ${count('added')} · 修改 ${count('modified')} · 移除／合并 ${count('removed')} · 疑似冲突 ${review.conflicts.length}。尚未发布。`;
+  for (const failed of review.report.failures ?? []) byId('conflictList').append(make('p',`分析失败：${failed.input} · ${failed.reason}`,'uncertain-fact'));
+  for (const conflict of review.conflicts) {
+    const card = make('section','','conflict-card');
+    card.append(make('h3','需要你决定 · '+conflict.slug),make('p','旧：'+conflict.oldFact),make('p','新：'+conflict.newFact),make('p','判断依据：'+conflict.reason,'muted'));
+    const label = make('label','处理方式'); const select = make('select'); select.dataset.conflict = conflict.id;
+    for (const [value,text] of [['','请选择'],['replace','采用新事实，标记旧事实已被替代'],['keep-old','保留旧事实，不收录这条新事实'],['uncertain','暂不判断，两条均标为待核实']]) {
+      const option = make('option',text); option.value = value; select.append(option);
+    }
+    label.append(select); card.append(label); byId('conflictList').append(card);
+  }
+}
+byId('refreshReview').onclick = ()=>{ review = null; loadReview().catch(fail); };
+byId('pendingNotice').onclick = ()=>showTab('reviewPanel');
+byId('publishDraft').onclick = ()=>perform(byId('publishDraft'),async()=>{
+  if (!review) return;
+  const decisions = Object.fromEntries([...document.querySelectorAll('[data-conflict]')].map(select=>[select.dataset.conflict,select.value]));
+  if (Object.values(decisions).some(value=>!value)) throw Error('请先为每项疑似冲突选择处理方式。');
+  const result = await api('review',{id:review.id,action:'publish',confirm:true,decisions});
+  review = null; await loadReview(); await refresh(); await poll();
+  displayPublished(result); show('已确认发布。新记忆现在可供对话读取。');
+});
+byId('discardDraft').onclick = ()=>perform(byId('discardDraft'),async()=>{
+  if (!review || !confirm('放弃这份草稿？已发布的记忆保持不变。')) return;
+  await api('review',{id:review.id,action:'discard'}); review = null; await loadReview(); await poll(); show('已放弃草稿。');
+});
+async function switchScope(scope) {
+  if (!mayDiscard()) { byId('scopeSelect').value = currentScope; return; }
+  show('');
+  currentScope = scope; scopeEpoch++; review = null; lastJob = null; store = null; clearNote();
+  byId('scopeSelect').value = scope;
+  byId('scopeHint').textContent = scope ? `当前项目：${scope}。整理与读取仅使用这个项目的记忆。` : '共享记忆包含原有内容。批量整理会跨项目，请按需选择项目范围。';
+  await refresh(); await loadReview(); await loadUsage();
+  const dates = await api('session-dates'); presets = dates; applyDatePreset();
+  displayPublished(null);
+}
+byId('scopeSelect').onchange = ()=>switchScope(byId('scopeSelect').value).catch(fail);
+byId('goLibrary').onclick = ()=>showTab('library');
+byId('useSession').onchange = async()=>{
+  targetSession = byId('useSession').value;
+  displayNote();
+  await loadUsage().catch(fail);
+};
+async function loadUsage() {
+  const epoch = scopeEpoch, session = targetSession;
+  const result = await api('usage'+(session ? '?session='+encodeURIComponent(session) : ''));
+  if (epoch !== scopeEpoch || session !== targetSession) return;
+  const target = session ? '此对话' : (currentScope ? '本项目默认' : '共享默认');
+  byId('bindingStatus').textContent = result.binding
+    ? `${target}已指定「${result.binding.title}」· ${result.binding.version}。下一条消息提供查阅入口；正文按需读取，引用版本固定，更新后可重新指定。${result.binding.scope === currentScope && store?.version !== result.binding.version ? ' 当前库已有其他版本。' : ''}`
+    : result.defaultBinding ? `${target}未单独指定；会沿用${result.defaultBinding.scope ? '项目' : '共享'}默认主题「${result.defaultBinding.title}」。也可通过目录读取其他记忆。`
+    : `${target}未指定主题。新对话已可通过目录按需读取；想优先查阅某个主题，可在下方记忆库将它设为默认。`;
+  byId('clearBinding').disabled = !result.binding;
+  const list = byId('usageList'); list.replaceChildren();
+  for (const entry of result.entries.slice(0,50)) {
+    const row = make('div','','usage-row');
+    row.append(make('strong',entry.kind === 'context' ? '旧版节选交付记录' : '工具已读取'),make('p',`${entry.slug} · ${entry.chars} 字符${entry.truncated ? ' · 节选' : ''}`),make('small',`${new Date(entry.at).toLocaleString()} · ${entry.sessionId || '未知对话'} · ${entry.version || '原始版本'}`));
+    list.append(row);
+  }
+  if (!result.entries.length) list.append(make('p','此范围暂无读取记录。新对话发送消息后，可在这里查看主题读取情况。目录提示本身不算已读取主题。','muted'));
+}
+byId('refreshUsage').onclick = ()=>loadUsage().catch(fail);
+byId('clearBinding').onclick = ()=>perform(byId('clearBinding'),async()=>{await api('use',{target:targetSession ? 'session' : 'default',sessionId:targetSession,clear:true});await loadUsage();});
+byId('useMemory').onclick = ()=>perform(byId('useMemory'),async()=>{
+  if (!selected) return;
+  await api('use',{target:targetSession ? 'session' : 'default',sessionId:targetSession,slug:selected.name,version:store.version});
+  showTab('usagePanel'); await loadUsage(); show(targetSession ? '已指定优先查阅主题。下一条消息提供入口，助手按需读取正文。' : '已设为默认参考。新对话首条消息即可看到入口，正文按需读取。');
+});
+byId('copyReference').onclick = ()=>perform(byId('copyReference'),async()=>{
+  const text = `请先调用 dreaming_memory 读取主题 ${selected.name}，scope=${JSON.stringify(currentScope || 'shared')}，version=${JSON.stringify(store.version || '')}，核对日期和已被替代／待核实标记，再结合我的问题回答。`;
+  try { await navigator.clipboard.writeText(text); }
+  catch { const area = make('textarea'); area.value=text; document.body.append(area); area.select(); const ok=document.execCommand('copy'); area.remove(); if(!ok) throw Error('无法访问剪贴板，请使用页面上的对话示例。'); }
+  show('已复制主题引用指令，可粘贴到任意对话。');
+});
+async function reloadUseSessions() {
+  const catalog = await api('sessions');
+  const current = targetSession;
+  const select = byId('useSession');
+  select.replaceChildren();
+  const first = make('option','默认参考（含空白新对话）'); first.value=''; select.append(first);
+  for (const session of catalog.sessions) {
+    const option=make('option',`${session.title} · ${session.workspace || '无项目'}`);option.value=session.id;select.append(option);
+    if(session.scope && ![...byId('scopeSelect').options].some(o=>o.value===session.scope)) {
+      const scopeOption=make('option',session.scope);scopeOption.value=session.scope;byId('scopeSelect').append(scopeOption);
+    }
+  }
+  targetSession=catalog.sessions.some(s=>s.id===current) ? current : '';
+  select.value=targetSession;displayNote();
+  return catalog;
+}
+byId('reloadUseSessions').onclick=()=>perform(byId('reloadUseSessions'),async()=>{await reloadUseSessions();await loadUsage();});
+byId('usageDrawer').ontoggle=()=>{if(byId('usageDrawer').open)loadUsage().catch(fail);};
+byId('mapDrawer').ontoggle=()=>{if(byId('mapDrawer').open)displayMap();};
+byId('reviewDrawer').ontoggle=()=>{if(byId('reviewDrawer').open)loadReview().catch(fail);};
+byId('logsDrawer').ontoggle=()=>{if(byId('logsDrawer').open)loadLogs().catch(fail);};
+async function initializeGovernance() {
+  let catalog;
+  try { catalog = await reloadUseSessions(); }
+  catch { catalog={sessions:[]}; show('历史会话列表暂不可用，仍可浏览记忆或设置新对话默认主题。'); }
+  const params=new URLSearchParams(location.search), session=params.get('session');
+  const found=catalog.sessions.find(s=>s.id===session);
+  if(found) {targetSession=session;byId('useSession').value=session;}
+  await switchScope(found?.scope || '');
+  byId('newPath').value = store?.configuredDir || '';
+  if(session && params.get('mode') !== 'use') openSessionPicker(session);
+  else if(session) {
+    showTab('usagePanel');
+    if(!found) show('这是尚未保存的新对话。可直接设置默认主题，或复制主题引用指令到对话中使用。');
+  }
+}

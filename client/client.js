@@ -67,7 +67,7 @@ window.__ModuleLoader__.load({
           state === 'error' ? h('div', { role: 'alert', style: { padding: 20 } },
             h('p', null, error), h('button', { type: 'button', style: buttonStyle, onClick: () => setAttempt((n) => n + 1) }, '重新加载')) : null,
           h('iframe', {
-            key: attempt, src: target ? '/dreaming?session=' + encodeURIComponent(target.sessionId) + '&open=' + target.id : '/dreaming',
+            key: attempt, src: target ? '/dreaming?session=' + encodeURIComponent(target.sessionId) + '&open=' + target.id + '&mode=' + (target.mode || 'run') : '/dreaming',
             title: '梦境记忆库管理',
             style: { width: '100%', flex: 1, minHeight: 420, border: 0, display: state === 'error' ? 'none' : 'block' },
             onError: () => failed('无法加载 /dreaming。请确认梦境 Host 插件已启用。'),
@@ -121,6 +121,9 @@ window.__ModuleLoader__.load({
                 notify();
                 selectPanel(PANEL_ID);
               },
+            }, {
+              id:'use-memory', label:'梦境：在此会话使用记忆',
+              run:()=>{ launch={sessionId,id:++launchId,mode:'use'};notify();selectPanel(PANEL_ID); },
             }] : [],
           }), 'dsh-dreaming: session menu');
         });
